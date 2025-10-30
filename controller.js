@@ -1,330 +1,296 @@
-// controller.js (좌표계 유지, API 매핑 수정)
+// controller.js (Supabase 최종 수정 버전 - 모바일 컨트롤러 측)
 
 document.addEventListener('DOMContentLoaded', () => {
-    // ❗️ (Firebase 초기화 검사 생략)
-    if (typeof db === 'undefined') {
-        console.error("Firebase Firestore 'db' is not initialized.");
-        alert("Firebase 연결 실패! HTML을 확인하세요.");
+    // ⭐ Supabase 클라이언트 확인 ⭐
+    if (typeof supabase === 'undefined') {
+        console.error("Supabase client is not initialized.");
+        document.getElementById('loading-screen').innerHTML = '<h2>연결 오류: Supabase SDK를 확인하세요.</h2>';
         return;
     }
 
-    // --- 1. 세션 ID 및 Firebase 레퍼런스 설정 ---
+    const TABLE_NAME = 'controllers'; 
     const urlParams = new URLSearchParams(window.location.search);
     const SESSION_ID = urlParams.get('session');
     
     if (!SESSION_ID) {
-        alert("유효한 세션 ID가 없습니다. QR 코드를 다시 스캔하세요.");
-        document.body.innerHTML = "<h1>연결 실패</h1><p>유효한 세션 ID가 없습니다. PC의 QR 코드를 다시 스캔하세요.</p>";
+        document.getElementById('loading-screen').innerHTML = '<h2>세션 ID가 없습니다. PC에서 QR코드를 다시 스캔해주세요.</h2>';
         return;
     }
 
-    const CONTROLLER_REF = db.collection('controllers').doc(SESSION_ID);
+    // --- DOM 요소 ---
+    const loadingScreen = document.getElementById('loading-screen');
+    const mainController = document.getElementById('main-controller');
+    const sceneIndicator = document.getElementById('scene-indicator');
+    const connectionStatus = document.getElementById('connection-status');
+    const selectedListDiv = document.getElementById('selected-list');
+    const joystickControl = document.getElementById('joystick-control');
+    const joystickCenter = document.getElementById('joystick-center');
+    const controlButtons = document.querySelectorAll('.control-btn');
+    const toast = document.getElementById('selection-limit-toast');
 
-    // --- DOM 요소 및 변수 (생략) ---
-    const mainCanvasFrame = document.querySelector('.main-canvas-frame');
-    const touchPadsWrapper = document.querySelector('.touch-pads-wrapper');
-    const deleteButton = document.getElementById('delete-selected-deco');
-    const controlGroupWrapper = document.querySelector('.control-group-wrapper');
-    const sceneInfoEl = document.querySelector('.scene-info');
+    // --- 상태 변수 ---
+    let pcState = {}; // PC에서 받은 최신 상태 저장
+    let selectedDecoIds = [];
+    let isDragging = false;
+    let joystickRect = null;
+    let joystickCenterRect = null;
+    let lastMoveCommand = 0;
+    const THROTTLE_TIME_MOVE = 1000 / 30; // 30 FPS로 제한
 
-    let currentDecoList = []; 
-    let selectedDecoIds = []; 
-    const activeTouches = new Map(); 
-
+    // --- 알림창 표시 함수 ---
+    function showLimitToast() {
+        toast.style.opacity = '1';
+        setTimeout(() => {
+            toast.style.opacity = '0';
+        }, 3000);
+    }
+    
     // =========================================================================
-    // ⭐ 🚨통신 핵심 로직 (Firebase)🚨 ⭐
+    // ⭐ 🚨통신 핵심 로직 (Supabase)🚨 ⭐
     // =========================================================================
 
-    // --- 1. 모바일 -> PC (명령 전송) ---
-    async function sendCommandToFirestore(action, data = {}) {
-        if (!SESSION_ID) return;
-
-        if (action !== 'item_click' && action !== 'control_one' && selectedDecoIds.length === 0) {
-             console.warn("No item selected for action:", action);
-             return;
-        }
-        
-        const commandData = {
-            ...data,
-            ids: (action === 'control_one' || action === 'item_click') ? (data.id ? [data.id] : []) : (data.ids || selectedDecoIds)
-        };
-
-        if (action === 'control_one' || action === 'item_click') {
-            commandData.id = data.id;
-        }
-
+    /**
+     * 모바일 -> PC로 명령 전송
+     * @param {string} action 실행할 명령 (예: 'item_click', 'control_one', 'rotate', 'delete')
+     * @param {object} data 명령과 함께 보낼 데이터
+     */
+    async function sendCommandToPC(action, data = {}) {
         const command = {
             action: action,
-            data: commandData,
-            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            data: data,
+            timestamp: new Date().toISOString() // Supabase를 위한 서버리스 타임스탬프
         };
-        
+
         try {
-            // [참고] Set 작업은 문서 전체를 덮어쓰므로 1회의 '쓰기'로 계산됩니다.
-            await CONTROLLER_REF.set({ command: command }, { merge: true });
+            // ⭐ [Supabase 전환] Row 업데이트: command 필드 업데이트 ⭐
+            // PC측 리스너는 이 필드의 변화를 감지하고 명령을 처리한 후, 이 필드를 다시 NULL로 지웁니다.
+            const { error } = await supabase
+                .from(TABLE_NAME)
+                .update({ command: command })
+                .eq('id', SESSION_ID);
+
+            if (error) throw error;
+
         } catch (error) {
-            console.error("Error sending command to Firestore:", error);
+            console.error("Error sending command to Supabase:", error.message);
         }
     }
 
-    // --- 2. PC -> 모바일 (상태 수신) (생략) ---
+    // PC -> 모바일 (상태 수신 리스너)
     function listenForPCState() {
-        CONTROLLER_REF.onSnapshot((doc) => {
-            if (doc.exists && doc.data().pcState) {
-                const state = doc.data().pcState;
-                
-                sceneInfoEl.textContent = `Scene ${state.scene} 연결됨`;
-                currentDecoList = state.decoList || []; 
-                selectedDecoIds = state.selectedIds || []; 
-
-                updateTouchPads();
-            } else {
-                sceneInfoEl.textContent = "PC 연결 대기 중...";
-                currentDecoList = [];
-                selectedDecoIds = []; 
-                updateTouchPads();
-            }
-        }, (error) => {
-            console.error("Error listening for PC state:", error);
-            sceneInfoEl.textContent = "연결 오류!";
-        });
-    }
-
-    // =========================================================================
-    // ⭐ DOM Reconciliation & 달라붙음 방지 로직 ⭐
-    // =========================================================================
-    function updateTouchPads() {
-        if (mainCanvasFrame.offsetWidth === 0) return; 
-
-        const frameWidth = mainCanvasFrame.offsetWidth;
-        const frameHeight = mainCanvasFrame.offsetHeight;
-        
-        const draggingIds = new Set(Array.from(activeTouches.values()).map(data => data.decoId));
-        
-        const existingPads = new Map();
-        touchPadsWrapper.querySelectorAll('.touch-pad').forEach(pad => {
-            // 기존 코드에서 existingPings 대신 existingPads를 사용해야 함
-            existingPads.set(pad.dataset.id, pad); 
-        });
-
-        // --- 1. currentDecoList (새 상태)를 기준으로 DOM 업데이트 및 추가 ---
-        currentDecoList.forEach((deco, index) => {
-            let pad = existingPads.get(deco.id);
-
-            const mobileNormY = deco.y_mobile; 
-            const mobileNormX = 1.0 - deco.x_mobile; // PC와 모바일 좌표계 역전
-            const pixelX = mobileNormX * frameWidth;
-            const pixelY = mobileNormY * frameHeight;
-
-            if (pad) {
-                existingPads.delete(deco.id); 
-
-                // 🚨 드래그 중인 아이템이 아니라면, PC의 좌표로 업데이트합니다.
-                if (!draggingIds.has(deco.id)) {
-                    pad.style.left = `${pixelX}px`;
-                    pad.style.top = `${pixelY}px`;
-                }
-                
-                pad.classList.toggle('selected', selectedDecoIds.includes(deco.id));
-
-            } else {
-                // 1b. 새 패드 생성 (로직 생략)
-                pad = document.createElement('button');
-                pad.classList.add('touch-pad');
-                pad.id = `touch-pad-${deco.id}`;
-                pad.dataset.id = deco.id;
-                pad.title = `아이템 ${index + 1} 선택 및 이동`;
-
-                pad.style.left = `${pixelX}px`;
-                pad.style.top = `${pixelY}px`;
-                
-                if (selectedDecoIds.includes(deco.id)) {
-                    pad.classList.add('selected');
-                }
-
-                touchPadsWrapper.appendChild(pad);
-                setTimeout(() => { pad.style.opacity = '1'; }, 10); 
-            }
-        });
-
-        // --- 2. 맵에 남아있는 패드 (stale) DOM에서 삭제 (생략) ---
-        existingPads.forEach(pad => {
-            pad.style.opacity = '0';
-            setTimeout(() => { pad.remove(); }, 300);
-        });
-
-        // --- 3. 버튼 활성화/비활성화 (생략) ---
-        updateButtonDisabledState();
-
-    } // --- updateTouchPads 끝 ---
-    
-    function updateButtonDisabledState() {
-        const isSelected = selectedDecoIds.length > 0;
-        document.querySelectorAll('.control-btn').forEach(btn => {
-            btn.disabled = !isSelected;
-        });
-        deleteButton.disabled = !isSelected;
-        controlGroupWrapper.classList.toggle('active', isSelected);
-    }
-
-
-    // =========================================================================
-    // ⭐ 멀티터치 이벤트 핸들러 (움직임 핵심 로직) ⭐
-    // =========================================================================
-    
-    // 'touchstart' (생략)
-    touchPadsWrapper.addEventListener('touchstart', (e) => {
-        const frameRect = mainCanvasFrame.getBoundingClientRect();
-        const frameWidth = frameRect.width;
-        const frameHeight = frameRect.height;
-
-        for (const touch of e.changedTouches) {
-            const targetPad = touch.target.closest('.touch-pad');
-            
-            if (targetPad) { 
-                const decoId = targetPad.dataset.id;
-                
-                activeTouches.set(touch.identifier, {
-                    pad: targetPad,
-                    decoId: decoId,
-                    lastX: touch.clientX,
-                    lastY: touch.clientY,
-                    frameWidth: frameWidth,
-                    frameHeight: frameHeight,
-                    isDragging: false, 
-                    isThrottled: false, 
-                    finalNormX: -1, 
-                    finalNormY: -1 
-                });
-
-                if (selectedDecoIds.includes(decoId)) {
-                    targetPad.classList.add('active'); 
-                }
-            }
-        }
-    }, { passive: false }); 
-
-    // 'touchmove' 
-    touchPadsWrapper.addEventListener('touchmove', (e) => {
-        if (activeTouches.size > 0) {
-              e.preventDefault(); 
-        }
-
-        for (const touch of e.changedTouches) {
-            const dragData = activeTouches.get(touch.identifier);
-
-            if (dragData && dragData.pad && selectedDecoIds.includes(dragData.decoId)) {
-                
-                dragData.isDragging = true; 
-
-                const { pad, lastX, lastY, frameWidth, frameHeight } = dragData;
-                const dx = touch.clientX - lastX;
-                const dy = touch.clientY - lastY;
-                let currentPadLeft = parseFloat(pad.style.left);
-                let currentPadTop = parseFloat(pad.style.top);
-                let newPadLeft = currentPadLeft + dx;
-                let newPadTop = currentPadTop + dy;
-                
-                // 경계 제한 로직은 제거된 상태 유지
-
-                // 1. 로컬 UI 즉시 업데이트
-                pad.style.left = `${newPadLeft}px`;
-                pad.style.top = `${newPadTop}px`;
-                dragData.lastX = touch.clientX;
-                dragData.lastY = touch.clientY;
-
-                // 2. PC로 보낼 좌표 계산 (정규화 및 좌표계 역전) - ⭐좌표계 로직 유지⭐
-                const mobileNormX = newPadLeft / frameWidth;
-                const mobileNormY = newPadTop / frameHeight;
-                const logic_Site_TB = 1.0 - mobileNormX; // PC의 Y좌표
-                const logic_Site_LR = mobileNormY;     // PC의 X좌표
-
-                // 3. 'touchend'에서 사용할 최종 좌표 저장
-                dragData.finalNormX = logic_Site_LR; // PC의 X 좌표
-                dragData.finalNormY = logic_Site_TB; // PC의 Y 좌표
-
-                // 4. 100ms 스로틀링 (할당량 초과 방지)
-                if (dragData.isThrottled) {
-                    continue; 
-                }
-                dragData.isThrottled = true;
-                setTimeout(() => {
-                    if (activeTouches.has(touch.identifier)) {
-                        activeTouches.get(touch.identifier).isThrottled = false;
+        // ⭐ [Supabase 전환] Realtime Listener 사용 ⭐
+        supabase
+            .channel(`pc_state_${SESSION_ID}`) // 고유 채널 이름 사용
+            .on(
+                'postgres_changes',
+                { 
+                    event: 'UPDATE', 
+                    schema: 'public', 
+                    table: TABLE_NAME,
+                    filter: `id=eq.${SESSION_ID}` // 해당 세션 ID의 row만 필터링
+                },
+                (payload) => {
+                    const state = payload.new.pcState; // 업데이트된 row의 pcState 필드 접근
+                    if (state) {
+                        updateControllerUI(state);
+                        // 첫 연결 시 로딩 화면 숨김
+                        if (loadingScreen.style.display !== 'none') {
+                            loadingScreen.style.display = 'none';
+                            mainController.style.display = 'flex';
+                            connectionStatus.textContent = '연결됨';
+                        }
                     }
-                }, 100); // ⭐️ [핵심 수정] 100ms로 증가 ⭐️
-
-                // 5. PC로 'control_one' (move) 명령 전송
-                sendCommandToFirestore('control_one', { 
-                    id: dragData.decoId, 
-                    action: 'move',
-                    // ⭐ [수정] API 매핑: PC의 X좌표를 x_mobile로 전송
-                    x_mobile: logic_Site_LR,
-                    // ⭐ [수정] API 매핑: PC의 Y좌표를 y_mobile로 전송
-                    y_mobile: logic_Site_TB 
-                });
-            }
-        }
-    }, { passive: false }); 
-
-    // 'touchend' (생략)
-    const touchEndOrCancel = (e) => {
-        for (const touch of e.changedTouches) {
-            const dragData = activeTouches.get(touch.identifier);
-
-            if(dragData) {
-                dragData.pad.classList.remove('active'); 
-
-                if (dragData.isDragging === true) {
-                    // 최종 위치 1회 전송 (누락 방지)
-                    if (dragData.finalNormX !== -1) {
-                         // ⭐ [수정] API 매핑: dragData에 저장된 PC X/Y 좌표 전송
-                         sendCommandToFirestore('control_one', { 
-                             id: dragData.decoId, 
-                             action: 'move',
-                             x_mobile: dragData.finalNormX, 
-                             y_mobile: dragData.finalNormY 
-                         });
-                    }
-
-                } else {
-                    // [탭] 드래그되지 않았으므로 'item_click' 전송
-                    sendCommandToFirestore('item_click', { id: dragData.decoId });
                 }
-            }
-            activeTouches.delete(touch.identifier);
-        }
-    };
-
-    touchPadsWrapper.addEventListener('touchend', touchEndOrCancel);
-    touchPadsWrapper.addEventListener('touchcancel', touchEndOrCancel);
-
-
-    // --- 6. 버튼 이벤트 리스너 (생략) ---
-    document.querySelectorAll('.control-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            if (selectedDecoIds.length === 0 || btn.disabled) return;
-            const action = btn.dataset.action;
-            const direction = btn.dataset.direction;
-            
-            sendCommandToFirestore('control_multi', { 
-                action: action, 
-                direction: direction 
+            )
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log("Supabase Realtime Subscribed for PC state.");
+                } else if (status === 'CHANNEL_ERROR') {
+                    connectionStatus.textContent = '연결 오류!';
+                    console.error("Supabase Channel Error!");
+                }
             });
+    }
+
+    // =========================================================================
+    // ⭐ UI 및 이벤트 처리 로직 ⭐
+    // =========================================================================
+
+    // PC 상태 기반으로 UI 업데이트
+    function updateControllerUI(newState) {
+        pcState = newState;
+        selectedDecoIds = pcState.selectedIds || [];
+        
+        sceneIndicator.textContent = `SCENE ${pcState.scene || '?'}`;
+        
+        const currentDecoList = pcState.decoList || [];
+        
+        // 아이템 목록 렌더링
+        selectedListDiv.innerHTML = '';
+        if (currentDecoList.length === 0) {
+            selectedListDiv.innerHTML = '<div class="no-item">PC 화면에 장식을 추가하세요.</div>';
+        } else {
+            currentDecoList.forEach(deco => {
+                const isSelected = selectedDecoIds.includes(deco.id);
+                const itemEl = document.createElement('div');
+                itemEl.className = `selected-item ${isSelected ? 'selected' : ''}`;
+                itemEl.dataset.id = deco.id;
+                itemEl.textContent = `ID: ${deco.id.substring(0, 8)}...`; // 간략 ID 표시
+                
+                itemEl.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    // 클릭하여 선택/해제 명령 전송
+                    sendCommandToPC('item_click', { id: deco.id });
+                });
+                
+                selectedListDiv.appendChild(itemEl);
+            });
+        }
+        
+        // 조작 버튼 활성화/비활성화
+        const isActive = selectedDecoIds.length > 0;
+        controlButtons.forEach(btn => {
+            btn.disabled = !isActive;
+            btn.classList.toggle('disabled', !isActive);
+        });
+        joystickControl.classList.toggle('disabled', !isActive);
+
+        // 조이스틱 위치 업데이트 (선택된 아이템이 1개일 때만)
+        if (selectedDecoIds.length === 1) {
+            const selectedId = selectedDecoIds[0];
+            const selectedDeco = currentDecoList.find(d => d.id === selectedId);
+            if (selectedDeco) {
+                // PC에서 받은 정규화된 좌표로 조이스틱 위치 설정 (초기화)
+                setJoystickPositionByNormalized(selectedDeco.x_mobile, selectedDeco.y_mobile);
+            }
+        } else {
+            // 다중 선택 또는 미선택 시 조이스틱 초기 위치
+            resetJoystickPosition();
+        }
+    }
+    
+    // --- 조이스틱 로직 ---
+
+    function resetJoystickPosition() {
+        joystickControl.style.left = '50%';
+        joystickControl.style.top = '50%';
+        joystickControl.style.transform = 'translate(-50%, -50%)';
+        joystickCenter.style.transform = 'translate(-50%, -50%)';
+    }
+
+    function setJoystickPositionByNormalized(normalizedY, normalizedX) {
+        // PC Y축 정규화 값(0~1)이 모바일 조이스틱의 세로(Top) 위치에 해당
+        // PC X축 정규화 값(0~1)이 모바일 조이스틱의 가로(Left) 위치에 해당
+        
+        // (주의: 조이스틱 영역은 캔버스 전체가 아니라 부모 div 내부이므로 0~100%로 설정)
+        // 모바일 조이스틱은 부모(.joystick-area)를 기준으로 위치를 설정해야 합니다.
+
+        const newLeft = normalizedX * 100; // 0% ~ 100%
+        const newTop = normalizedY * 100;  // 0% ~ 100%
+        
+        // 조이스틱의 부모 영역(joystick-area) 내에서 좌표를 설정
+        // 이 때 transform: translate(-50%, -50%)를 사용하면 중앙 정렬이 되므로,
+        // (0,0) ~ (100,100) 범위로 움직이게 합니다.
+        
+        joystickControl.style.left = `${newLeft}%`;
+        joystickControl.style.top = `${newTop}%`;
+        joystickControl.style.transform = 'translate(-50%, -50%)'; // 항상 중앙 정렬 유지
+        joystickCenter.style.transform = 'translate(0, 0)'; // 조이스틱 중앙 마커는 움직이지 않음
+    }
+
+    // 마우스/터치 시작
+    joystickControl.addEventListener('mousedown', startDrag);
+    joystickControl.addEventListener('touchstart', startDrag);
+
+    function startDrag(e) {
+        if (selectedDecoIds.length !== 1 || e.target.closest('.joystick-center')) return;
+        e.preventDefault();
+        
+        isDragging = true;
+        joystickRect = joystickControl.parentNode.getBoundingClientRect();
+        joystickCenterRect = joystickCenter.getBoundingClientRect();
+        
+        const event = e.touches ? e.touches[0] : e;
+        
+        document.addEventListener('mousemove', drag);
+        document.addEventListener('touchmove', drag);
+        document.addEventListener('mouseup', stopDrag);
+        document.addEventListener('touchend', stopDrag);
+    }
+
+    // 드래그 중
+    function drag(e) {
+        if (!isDragging || selectedDecoIds.length !== 1) return;
+        const now = Date.now();
+        if (now < lastMoveCommand + THROTTLE_TIME_MOVE) return;
+        
+        const event = e.touches ? e.touches[0] : e;
+        
+        let x = event.clientX - joystickRect.left;
+        let y = event.clientY - joystickRect.top;
+        
+        // 경계 제한 (부모 요소 범위)
+        x = Math.max(0, Math.min(x, joystickRect.width));
+        y = Math.max(0, Math.min(y, joystickRect.height));
+
+        // UI 업데이트 (조이스틱을 마우스 위치로 이동)
+        joystickControl.style.left = `${x}px`;
+        joystickControl.style.top = `${y}px`;
+        joystickControl.style.transform = 'translate(-50%, -50%)'; 
+
+        // 정규화된 좌표 계산 (PC에 전송할 값)
+        const normalizedX = x / joystickRect.width; // 0 ~ 1
+        const normalizedY = y / joystickRect.height; // 0 ~ 1
+
+        // 명령 전송 (선택된 아이템 1개에 대해서만)
+        sendCommandToPC('control_one', {
+            id: selectedDecoIds[0],
+            x_mobile: normalizedY, // PC의 Y축 정규화 값으로 변환
+            y_mobile: normalizedX  // PC의 X축 정규화 값으로 변환
+        });
+
+        lastMoveCommand = now;
+    }
+
+    // 드래그 종료
+    function stopDrag() {
+        if (isDragging) {
+            isDragging = false;
+            document.removeEventListener('mousemove', drag);
+            document.removeEventListener('touchmove', drag);
+            document.removeEventListener('mouseup', stopDrag);
+            document.removeEventListener('touchend', stopDrag);
+            
+            // 조작 종료 후 PC에 상태를 다시 요청하여 싱크를 맞춥니다.
+            // (조이스틱 UI는 PC에서 오는 응답으로 재설정됨)
+            // Supabase 리스너가 알아서 처리하므로 별도의 요청은 필요하지 않습니다.
+        }
+    }
+    
+    // --- 버튼 조작 로직 ---
+
+    controlButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const action = button.dataset.action;
+            const direction = button.dataset.direction;
+
+            if (selectedDecoIds.length === 0) return;
+
+            let commandAction = 'control_multi';
+            let commandData = { ids: selectedDecoIds };
+
+            if (action === 'delete') {
+                commandAction = 'delete_multi';
+            } else if (action === 'flip') {
+                commandData = { ids: selectedDecoIds };
+            } else if (action === 'scale' || action === 'rotate') {
+                commandData = { ids: selectedDecoIds, direction: direction, action: action };
+            }
+
+            sendCommandToPC(commandAction, commandData);
         });
     });
 
-    // --- 7. 삭제 버튼 (생략) ---
-    deleteButton.addEventListener('click', () => {
-        if (selectedDecoIds.length === 0 || deleteButton.disabled) return;
-        sendCommandToFirestore('delete_multi');
-    });
-    
-    // --- 8. 초기화 ---
+    // --- 초기 실행 ---
     listenForPCState();
-
-    // 리사이즈 이벤트
-    window.addEventListener('resize', () => {
-        updateTouchPads();
-    });
 });

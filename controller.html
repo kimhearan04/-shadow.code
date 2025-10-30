@@ -1,69 +1,70 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>모바일 컨트롤러</title>
-    <link rel="stylesheet" href="controller.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>모바일 컨트롤러</title>
+    <link rel="stylesheet" href="controller.css">
 </head>
 <body>
 
-    <div class="container">
-        <div class="main-canvas-frame">
-            <div class="scene-info">Scene 1 연결</div>
-            
-            <div class="touch-pads-wrapper">
-                </div>
-        </div>
+    <div class="container">
+        <div class="main-canvas-frame">
+            <div class="scene-info">Scene 1 연결</div>
+            
+            <div class="touch-pads-wrapper">
+                </div>
+        </div>
 
-        <div class="bottom-controls">
-            <button class="delete-btn" id="delete-selected-deco"><span>삭제</span></button>
+        <div class="bottom-controls">
+            <button class="delete-btn" id="delete-selected-deco"><span>삭제</span></button>
 
-            <div class="control-group-wrapper">
-                
-                <div class="control-group">
-                    <button class="control-btn align" data-action="flip" data-direction="UP" title="좌우반전">^</button>
-                    <p><span>좌우반전</span></p>
-                    <button class="control-btn align" data-action="flip" data-direction="DOWN" title="좌우반전">v</button>
-                </div>
-            
-                <div class="control-group">
-                    <button class="control-btn scale" data-action="scale" data-direction="UP" title="크게"><span>+</span></button>
-                    <p><span>크기</span></p>
-                    <button class="control-btn scale" data-action="scale" data-direction="DOWN" title="작게"><span>-</span></button>
-                </div>
+            <div class="control-group-wrapper">
+                
+                <div class="control-group">
+                    <button class="control-btn align" data-action="flip" data-direction="UP" title="좌우반전">^</button>
+                    <p><span>좌우반전</span></p>
+                    <button class="control-btn align" data-action="flip" data-direction="DOWN" title="좌우반전">v</button>
+                </div>
+            
+                <div class="control-group">
+                    <button class="control-btn scale" data-action="scale" data-direction="UP" title="크게"><span>+</span></button>
+                    <p><span>크기</span></p>
+                    <button class="control-btn scale" data-action="scale" data-direction="DOWN" title="작게"><span>-</span></button>
+                </div>
 
-                <div class="control-group">
-                    <button class="control-btn rotate" data-action="rotate" data-direction="LEFT" title="반시계 회전">^</button>
-                    <p><span>회전</span></p>
-                    <button class="control-btn rotate" data-action="rotate" data-direction="RIGHT" title="시계 회전">v</button>
-                </div>
-            </div>
-        </div>
-    </div>
+                <div class="control-group">
+                    <button class="control-btn rotate" data-action="rotate" data-direction="LEFT" title="반시계 회전">^</button>
+                    <p><span>회전</span></p>
+                    <button class="control-btn rotate" data-action="rotate" data-direction="RIGHT" title="시계 회전">v</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-firestore.js"></script>
 
-    <script>
-      // ⭐ [필수] Firebase 설정 (PC와 동일해야 함)
-      const firebaseConfig = {
-        apiKey: "AIzaSyBkCdi2LZvWoGGnv3dT8Kq76TOz42L4GDw",
-        authDomain: "controlling-82b19.firebaseapp.com",
-        projectId: "controlling-82b19",
-        storageBucket: "controlling-82b19.firebasestorage.app",
-        messagingSenderId: "153225611363",
-        appId: "1:153225611363:web:4a2669dedd056c27ce9056",
-        measurementId: "G-QLXFYJGEHB"
-      };
-    
-      if (!firebase.apps.length) {
-          firebase.initializeApp(firebaseConfig);
-      }
-      
-      const db = firebase.firestore();
-    </script>
-    
-    <script src="controller.js"></script>
+    <script>
+      // ⭐ [필수] Firebase 설정 (PC와 동일해야 함)
+      const firebaseConfig = {
+        // ⭐ [수정] 요청하신 키로 대체 (형식은 JWT이나, apiKey 필드에 강제 삽입)
+        apiKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpcmNvZGZwYmd5dGd5ZW9wYmZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4MTEyNjgsImV4cCI6MjA3NzM4NzI2OH0.MzleqK9tFyn8DdKnpFlqtaMBQj15c9onQG-AjaSdyss",
+        authDomain: "controlling-82b19.firebaseapp.com",
+        projectId: "controlling-82b19",
+        storageBucket: "controlling-82b19.firebasestorage.app",
+        messagingSenderId: "153225611363",
+        appId: "1:153225611363:web:4a2669dedd056c27ce9056",
+        measurementId: "G-QLXFYJGEHB"
+      };
+    
+      if (!firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+      }
+      
+      const db = firebase.firestore();
+    </script>
+    
+    <script src="controller.js"></script>
 </body>
 </html>

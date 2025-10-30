@@ -1,22 +1,23 @@
-// index.js (Supabase Realtime 대체 버전 - 600줄 원본 기반 수정)
+// script3.js (Supabase 최종 수정 버전 - PC 측)
 
 document.addEventListener('DOMContentLoaded', () => {
-    // ❗️ index.html에서 'supabase' 객체가 초기화되었다고 가정합니다.
+    // ⭐ Supabase 클라이언트 초기화 확인 (HTML에서 초기화되었다고 가정) ⭐
     if (typeof supabase === 'undefined') {
-        console.error("Supabase client is not initialized.");
+        console.error("Supabase client is not initialized. Please ensure the Supabase SDK is loaded and initialized in your HTML.");
+        alert("Supabase 연결 실패! HTML을 확인하세요.");
         return;
     }
+
+    const TABLE_NAME = 'controllers'; 
 
     // --- 1. 모드 판별, 기본 변수 및 세션 설정 ---
     let SESSION_ID = new URLSearchParams(window.location.search).get('session');
     if (!SESSION_ID) {
+        // 세션 ID가 없으면 생성하고 URL을 업데이트 (PC 모드일 경우)
         SESSION_ID = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         window.history.replaceState({}, document.title, `?session=${SESSION_ID}`);
     }
     
-    // ⚠️ Firebase-specific references (CONTROLLER_REF) 제거됨.
-    // Supabase는 Realtime Channel과 `from('table')`을 사용합니다.
-
     // --- DOM 요소 및 데이터 ---
     const canvas = document.getElementById('canvas');
     const openControllerBtn = document.getElementById('open-controller-btn');
@@ -33,7 +34,6 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentScene = '1';
     let selectedDecoIds = []; 
     let toastTimer = null;
-    let realtimeChannel = null; // ⭐ Supabase Realtime Channel 변수 추가
 
     // --- 알림창 표시 함수 ---
     function showLimitToast() {
@@ -47,11 +47,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // ⭐ 🚨통신 핵심 로직 (Supabase Realtime)🚨 ⭐
+    // ⭐ 🚨통신 핵심 로직 (Supabase)🚨 ⭐
     // =========================================================================
 
     // PC -> 모바일 (상태 동기화)
-    async function syncStateToSupabase() {
+    async function syncStateToSupabase() { // 함수명 변경
         if (!canvas || canvas.offsetWidth === 0 || canvas.offsetHeight === 0) return;
 
         const canvasWidth = canvas.offsetWidth;
@@ -69,99 +69,104 @@ document.addEventListener('DOMContentLoaded', () => {
                 // x_mobile (모바일 세로) = PC의 Y축 정규화 값 
                 x_mobile: centerY / canvasHeight, 
                 // y_mobile (모바일 가로) = PC의 X축 정규화 값 
-                y_mobile: centerX / canvasWidth,
-                width: decoWidth,
-                height: decoHeight,
-                rotation: deco.rotation,
-                scaleX: deco.scaleX
+                y_mobile: centerX / canvasWidth    
             };
         });
         
         const state = {
-            id: SESSION_ID, // PK로 사용
             scene: currentScene,
-            selected_ids: selectedDecoIds, // Supabase snake_case 관례
-            deco_list: decoListForMobile, // JSONB 타입으로 저장
-            timestamp: new Date().toISOString()
+            selectedIds: selectedDecoIds, 
+            decoList: decoListForMobile,
+            timestamp: new Date().toISOString() // ⭐ [Supabase] JS 날짜 사용 ⭐
         };
 
         try {
-            // game_state 테이블에 Upsert (Insert or Update)
+            // ⭐ [Supabase 전환] Row 업데이트: pcState 필드 업데이트 ⭐
             const { error } = await supabase
-                .from('game_state') // ⚠️ 테이블 이름 가정
-                .upsert(state, { onConflict: 'id' }); 
+                .from(TABLE_NAME)
+                .update({ pcState: state })
+                .eq('id', SESSION_ID);
+            
+            // 만약 해당 ID의 row가 없다면 (처음 연결 시), insert 시도
+            if (error && error.code === 'PGRST116') { // 로우가 없다는 Supabase의 일반적인 에러 코드를 가정합니다.
+                 const { error: insertError } = await supabase
+                    .from(TABLE_NAME)
+                    .insert([{ id: SESSION_ID, pcState: state, command: null }]);
+                if (insertError) throw insertError;
+            } else if (error) {
+                throw error;
+            }
 
-            if (error) throw error;
-            // console.log('Supabase 상태 동기화 성공');
         } catch (error) {
-            console.error('Error syncing state to Supabase:', error);
+            console.error("Error syncing state to Supabase:", error.message);
         }
     }
     
     // 모바일 -> PC (조작 명령 수신 리스너)
-    let lastCommandTimestamp = 0; // ⚠️ Supabase에서는 필요 없을 수도 있지만, 안전을 위해 남겨둠.
+    let lastCommandTimestamp = 0;
     function listenForControlCommands() {
-        // 기존 채널 제거
-        if (realtimeChannel) {
-            supabase.removeChannel(realtimeChannel);
-        }
+        // ⭐ [Supabase 전환] Realtime Listener 사용 ⭐
+        supabase
+            .channel(`controller_commands_${SESSION_ID}`) // 고유 채널 이름 사용
+            .on(
+                'postgres_changes',
+                { 
+                    event: 'UPDATE', 
+                    schema: 'public', 
+                    table: TABLE_NAME,
+                    filter: `id=eq.${SESSION_ID}` // 해당 세션 ID의 row만 필터링
+                },
+                (payload) => {
+                    const command = payload.new.command; // 업데이트된 row의 command 필드 접근
+                    
+                    if (command) {
+                        // Supabase의 timestamp는 문자열이므로 파싱
+                        const currentTimestamp = new Date(command.timestamp).getTime(); 
+                        
+                        // Firebase의 toMillis() 대신 JS의 getTime()을 사용
+                        if (currentTimestamp > lastCommandTimestamp) {
+                            lastCommandTimestamp = currentTimestamp;
+                            const action = command.action;
+                            const data = command.data || {};
 
-        // 새로운 Realtime 채널 생성 및 구독 (commands 테이블의 INSERT 이벤트만 감지)
-        realtimeChannel = supabase
-            .channel(`controller:${SESSION_ID}`) 
-            .on('postgres_changes', { 
-                event: 'INSERT', 
-                schema: 'public', 
-                table: 'controller_commands', // ⚠️ 명령을 받는 테이블 이름 가정
-                filter: `session_id=eq.${SESSION_ID}` // 현재 세션 ID 필터링
-            }, async (payload) => {
-                const command = payload.new;
-                
-                // Supabase에서 timestamp는 문자열일 가능성이 높으므로, 비교 로직 수정
-                // 롤백 방지 로직은 모바일 측에 위임하고 PC는 무조건 명령을 수행하도록 단순화
-                
-                const action = command.action;
-                const data = command.data || {};
+                            if (action === 'item_click') {
+                                handleItemClick(data.id); 
+                            } else if (action === 'control_one') {
+                                // 역변환: x_mobile -> PC의 Y좌표, y_mobile -> PC의 X좌표
+                                handleItemMove(data.id, data.x_mobile, data.y_mobile); 
+                            } else if (action === 'control_multi') {
+                                data.ids.forEach(id => {
+                                    handleControllerControl(id, data.action, { direction: data.direction });
+                                });
+                            } else if (action === 'delete_multi') {
+                                data.ids.forEach(id => {
+                                    handleControllerControl(id, 'delete');
+                                });
+                            }
 
-                if (action === 'item_click') {
-                    handleItemClick(data.id); 
-                } else if (action === 'control_one') {
-                    // 역변환: x_mobile -> PC의 Y좌표, y_mobile -> PC의 X좌표
-                    handleItemMove(data.id, data.x_mobile, data.y_mobile); 
-                    // 이동은 자주 발생하므로, 별도의 syncStateToSupabase() 호출 대신 handleItemMove 내부에서 처리
-                } else if (action === 'control_multi') {
-                    // 다중 명령은 선택된 아이템 전체에 적용 (원본 로직 유지)
-                    selectedDecoIds.forEach(id => {
-                        handleControllerControl(id, data.action, { direction: data.direction });
-                    });
-                } else if (action === 'delete_multi') {
-                    selectedDecoIds.forEach(id => {
-                        handleControllerControl(id, 'delete');
-                    });
+                            // ⭐ [Supabase 전환] 명령 처리 후 필드 NULL로 업데이트 (명령 소비) ⭐
+                            supabase
+                                .from(TABLE_NAME)
+                                .update({ command: null })
+                                .eq('id', SESSION_ID)
+                                .then(({ error }) => {
+                                    if (error) console.error("Error clearing command field:", error.message);
+                                });
+                        }
+                    }
                 }
-
-                // 명령 처리 후, Supabase에서 해당 row 삭제 (명령 소비)
-                const { error: deleteError } = await supabase
-                    .from('controller_commands') // ⚠️ 테이블 이름 가정
-                    .delete()
-                    .eq('id', command.id);
-                
-                if (deleteError) {
-                    console.error("Error deleting command row:", deleteError);
-                }
-
-            })
+            )
             .subscribe((status) => {
                 if (status === 'SUBSCRIBED') {
-                    console.log('Supabase Realtime Channel 구독 성공:', SESSION_ID);
+                    console.log("Supabase Realtime Subscribed.");
                 } else if (status === 'CHANNEL_ERROR') {
-                    console.error('Supabase Realtime Channel 오류');
+                    console.error("Supabase Channel Error!");
                 }
             });
     }
 
     // =========================================================================
-    // ⭐ PC 메인 웹사이트 모드 로직 (로컬) ⭐
+    // ⭐ PC 메인 웹사이트 모드 로직 ⭐
     // =========================================================================
     
     listenForControlCommands(); 
@@ -169,14 +174,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (openControllerBtn) {
         openControllerBtn.addEventListener('click', () => {
             if (qrModal) qrModal.style.display = 'flex';
+            
+            // ⭐ [파일명 규칙 준수] 모바일 컨트롤러 HTML 경로를 controller.html로 설정 ⭐
             const baseUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/'));
-            const controllerUrl = `${baseUrl}/controller.html?session=${SESSION_ID}`; // ⚠️ controller.html URL 확인 필요
+            const controllerUrl = `${baseUrl}/controller.html?session=${SESSION_ID}`; 
+            
             if (qrcodeDiv) qrcodeDiv.innerHTML = '';
             if (qrcodeDiv && typeof QRCode !== 'undefined') {
-                // QR 코드 생성
                 new QRCode(qrcodeDiv, { text: controllerUrl, width: 256, height: 256 });
             }
-            syncStateToSupabase(); // 상태 동기화
+            syncStateToSupabase(); 
         });
     }
 
@@ -210,7 +217,7 @@ document.addEventListener('DOMContentLoaded', () => {
         syncStateToSupabase(); 
     }
 
-    // --- 모바일 좌표계로 아이템 이동 처리 (수정: 동기화 로직 변경) ---
+    // --- 모바일 좌표계로 아이템 이동 처리 (경계 제한 포함) ---
     function handleItemMove(id, mobileControllerY, mobileControllerX) {
         if (!canvas || !id) return;
         const decoData = storyData[currentScene].decorations.find(d => d.id === id);
@@ -221,13 +228,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const canvasHeight = canvas.offsetHeight;
         
         // 좌표 역변환 (모바일 좌표 -> PC 픽셀 좌표)
+        // mobileControllerX (모바일 가로 0~1) -> PC의 X축 픽셀
+        // mobileControllerY (모바일 세로 0~1) -> PC의 Y축 픽셀
         let centerX = mobileControllerX * canvasWidth;
         let centerY = mobileControllerY * canvasHeight;
 
         let newX = centerX - (decoData.width / 2);
         let newY = centerY - (decoData.height / 2);
 
-        // 🌟 [핵심 수정]: PC에서 캔버스 경계를 넘지 않도록 강제 적용 (원본 로직 유지)
+        // 🌟 PC에서 캔버스 경계를 넘지 않도록 강제 적용 (튕김 방지)
         newX = Math.max(0, Math.min(newX, canvasWidth - decoData.width));
         newY = Math.max(0, Math.min(newY, canvasHeight - decoData.height));
         
@@ -238,13 +247,11 @@ document.addEventListener('DOMContentLoaded', () => {
         updateElementStyle(decoData);
         updateThumbnail(currentScene); 
         
-        // 이동은 빈번하므로, 부하를 줄이기 위해 동기화는 0.1초 딜레이를 줍니다.
-        // (주의: 모바일-PC 간 충돌이 발생할 수 있으나, 이동의 경우 빈번한 업데이트가 중요)
-        if (window.moveSyncTimer) clearTimeout(window.moveSyncTimer);
-        window.moveSyncTimer = setTimeout(syncStateToSupabase, 100); 
+        // 이동 명령에 대한 동기화는 제거됨 (롤백 방지 최적화)
+        // syncStateToSupabase(); 
     }
 
-    // --- 컨트롤러 버튼 조작 처리 함수 (수정: 동기화 로직 변경) ---
+    // --- 컨트롤러 버튼 조작 처리 함수 ---
     function handleControllerControl(id, action, data) {
         let decoData = storyData[currentScene].decorations.find(d => d.id === id);
         if (!decoData) return;
@@ -299,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- (이하 나머지 코드들은 원본과 동일하게 유지됩니다) ---
+    // --- (이하 나머지 코드들은 이전과 동일합니다) ---
 
     function updateElementStyle(decoData) {
         const element = document.getElementById(decoData.id);
@@ -362,8 +369,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createDecorationElement(decoData) {
-        // ... (HTML 요소 생성 로직 - 원본과 동일) ...
-        if (!canvas) return;
+            if (!canvas) return;
         const item = document.createElement('div');
         item.className = 'decoration-item';
         item.id = decoData.id;
@@ -383,7 +389,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const controls = document.createElement('div');
         controls.className = 'controls';
         controls.innerHTML = `<button class="flip" title="좌우반전"><img src="img/좌우반전.png" alt="좌우반전" onerror="this.parentNode.innerHTML='반전'"></button>
-                             <button class="delete" title="삭제"><img src="img/휴지통.png" alt="삭제" onerror="this.parentNode.innerHTML='삭제'"></button>`;
+                                     <button class="delete" title="삭제"><img src="img/휴지통.png" alt="삭제" onerror="this.parentNode.innerHTML='삭제'"></button>`;
         
         const handles = ['tl', 'tr', 'bl', 'br', 'rotator'].map(type => {
             const handle = document.createElement('div');
@@ -411,7 +417,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.target.closest('.handle') || e.target.closest('.controls')) return;
             
             if (!selectedDecoIds.includes(element.id)) {
-                handleItemClick(element.id);
+                 handleItemClick(element.id);
             }
             
             e.preventDefault();
@@ -462,6 +468,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!snappedX && verticalGuide) verticalGuide.style.display = 'none';
             if (!snappedY && horizontalGuide) horizontalGuide.style.display = 'none';
             
+            // 경계 제한을 적용합니다. (마우스 드래그 시 PC에서도 벗어나지 않도록)
+            newLeft = Math.max(0, Math.min(newLeft, canvasWidth - elementWidth));
+            newTop = Math.max(0, Math.min(newTop, canvasHeight - elementHeight));
+
             element.style.top = newTop + "px";
             element.style.left = newLeft + "px";
         }
@@ -472,13 +482,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (verticalGuide) verticalGuide.style.display = 'none';
             if (horizontalGuide) horizontalGuide.style.display = 'none';
             
-            // 로컬 데이터 업데이트
             decoData.x = element.offsetLeft;
             decoData.y = element.offsetTop;
             
             updateThumbnail(currentScene); 
-            // 🚨 Supabase 동기화 추가
-            syncStateToSupabase(); 
+            syncStateToSupabase(); // 함수명 변경
         }
         
         element.querySelectorAll('.handle:not(.rotator)').forEach(handle => {
@@ -530,14 +538,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             document.onmouseup = () => {
                 document.onmousemove = null; document.onmouseup = null;
-                // 로컬 데이터 업데이트
                 decoData.width = parseFloat(element.style.width);
                 decoData.height = parseFloat(element.style.height);
                 decoData.x = element.offsetLeft;
                 decoData.y = element.offsetTop;
                 updateThumbnail(currentScene); 
-                // 🚨 Supabase 동기화 추가
-                syncStateToSupabase(); 
+                syncStateToSupabase(); // 함수명 변경
             };
         }
         
@@ -564,8 +570,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.onmouseup = function() {
                     document.onmousemove = null; document.onmouseup = null;
                     updateThumbnail(currentScene);
-                    // 🚨 Supabase 동기화 추가
-                    syncStateToSupabase(); 
+                    syncStateToSupabase(); // 함수명 변경
                 };
             };
         }
@@ -576,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 e.stopPropagation();
                 decoData.scaleX *= -1;
                 updateElementStyle(decoData);
-                syncStateToSupabase();
+                syncStateToSupabase(); // 함수명 변경
                 updateThumbnail(currentScene);
             });
         }
@@ -621,9 +626,6 @@ document.addEventListener('DOMContentLoaded', () => {
             scene.classList.add('active');
             currentScene = scene.dataset.scene;
             renderScene(currentScene); 
-            // 🚨 Supabase 동기화 추가
-            syncStateToSupabase();
-            listenForControlCommands(); // 씬 변경 시 리스너 재시작
         });
     });
     
@@ -653,7 +655,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 초기 렌더링 및 동기화 시작
+    // 초기 렌더링
     renderScene(currentScene);
-    syncStateToSupabase();
 });

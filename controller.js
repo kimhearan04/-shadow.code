@@ -1,4 +1,4 @@
-// controller.js (최종 수정 버전 - 100ms 스로틀링 적용)
+// controller.js (좌표계 유지, API 매핑 수정)
 
 document.addEventListener('DOMContentLoaded', () => {
     // ❗️ (Firebase 초기화 검사 생략)
@@ -103,7 +103,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const existingPads = new Map();
         touchPadsWrapper.querySelectorAll('.touch-pad').forEach(pad => {
-            existingPings.set(pad.dataset.id, pad);
+            // 기존 코드에서 existingPings 대신 existingPads를 사용해야 함
+            existingPads.set(pad.dataset.id, pad); 
         });
 
         // --- 1. currentDecoList (새 상태)를 기준으로 DOM 업데이트 및 추가 ---
@@ -232,15 +233,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 dragData.lastX = touch.clientX;
                 dragData.lastY = touch.clientY;
 
-                // 2. PC로 보낼 좌표 계산 (정규화 및 좌표계 역전)
+                // 2. PC로 보낼 좌표 계산 (정규화 및 좌표계 역전) - ⭐좌표계 로직 유지⭐
                 const mobileNormX = newPadLeft / frameWidth;
                 const mobileNormY = newPadTop / frameHeight;
                 const logic_Site_TB = 1.0 - mobileNormX; // PC의 Y좌표
-                const logic_Site_LR = mobileNormY;     // PC의 X좌표
+                const logic_Site_LR = mobileNormY;     // PC의 X좌표
 
                 // 3. 'touchend'에서 사용할 최종 좌표 저장
-                dragData.finalNormX = logic_Site_TB;
-                dragData.finalNormY = logic_Site_LR;
+                dragData.finalNormX = logic_Site_LR; // PC의 X 좌표
+                dragData.finalNormY = logic_Site_TB; // PC의 Y 좌표
 
                 // 4. 100ms 스로틀링 (할당량 초과 방지)
                 if (dragData.isThrottled) {
@@ -254,11 +255,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }, 100); // ⭐️ [핵심 수정] 100ms로 증가 ⭐️
 
                 // 5. PC로 'control_one' (move) 명령 전송
-                sendCommandToFirestore('control_one', { 
-                    id: dragData.decoId, 
+                sendCommandToFirestore('control_one', { 
+                    id: dragData.decoId, 
                     action: 'move',
-                    x_mobile: logic_Site_TB, 
-                    y_mobile: logic_Site_LR 
+                    // ⭐ [수정] API 매핑: PC의 X좌표를 x_mobile로 전송
+                    x_mobile: logic_Site_LR,
+                    // ⭐ [수정] API 매핑: PC의 Y좌표를 y_mobile로 전송
+                    y_mobile: logic_Site_TB 
                 });
             }
         }
@@ -275,11 +278,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (dragData.isDragging === true) {
                     // 최종 위치 1회 전송 (누락 방지)
                     if (dragData.finalNormX !== -1) {
-                         sendCommandToFirestore('control_one', { 
-                             id: dragData.decoId, 
+                         // ⭐ [수정] API 매핑: dragData에 저장된 PC X/Y 좌표 전송
+                         sendCommandToFirestore('control_one', { 
+                             id: dragData.decoId, 
                              action: 'move',
-                             x_mobile: dragData.finalNormX, 
-                             y_mobile: dragData.finalNormY 
+                             x_mobile: dragData.finalNormX, 
+                             y_mobile: dragData.finalNormY 
                          });
                     }
 

@@ -296,3 +296,4 @@ document.addEventListener('DOMContentLoaded', () => {
     // listenForControlCommands(); 
 
 }); // DOMContentLoaded 끝
+}); // DOMContentLoaded 끝
